@@ -15,6 +15,14 @@ import {
   DEFAULT_MASTER_CONFIG
 } from '../config/characterConfig';
 
+/**
+ * Single GLB produced by scripts/convert-animations-to-glb.mjs, bundling every clip from
+ * public/assets/animations/**.fbx as animation tracks on the shared Mixamo skeleton. Loading
+ * one GLB instead of 31 separate FBX files avoids 31 slow FBX parses and duplicate skeletons.
+ * Re-run that script (npm run convert-animations) after adding/renaming/removing a clip FBX.
+ */
+const ANIMATION_ATLAS_URL = '/assets/animations/animation-atlas.glb';
+
 export interface AnimationDebugInfo {
   masterName: string;
   masterLoadStatus: 'LOADED' | 'ERROR' | 'LOADING' | 'UNLOADED';
@@ -60,6 +68,7 @@ export class CentralizedAnimationController {
   private actionCache: Map<string, THREE.AnimationAction> = new Map();
   private clipCache: Map<string, THREE.AnimationClip> = new Map();
   private loadingPromises: Map<string, Promise<THREE.AnimationClip | null>> = new Map();
+  private animationAtlasPromise: Promise<Map<string, THREE.AnimationClip>> | null = null;
 
   // State Management
   private currentArchetype: CombatArchetype = 'vanguard';
@@ -102,6 +111,37 @@ export class CentralizedAnimationController {
 
     this.gltfLoader = new GLTFLoader();
     this.gltfLoader.setDRACOLoader(this.dracoLoader);
+
+    // Kick off the animation atlas fetch immediately; it's independent of the master
+    // character rig load, so both can be in flight over the network at the same time.
+    this.loadAnimationAtlas();
+  }
+
+  /**
+   * Loads and caches the merged animation atlas GLB (see ANIMATION_ATLAS_URL), returning
+   * a map of clip name (matching the original .fbx file name, e.g. "Walking.fbx") to clip.
+   */
+  private loadAnimationAtlas(): Promise<Map<string, THREE.AnimationClip>> {
+    if (!this.animationAtlasPromise) {
+      this.animationAtlasPromise = new Promise(resolve => {
+        this.gltfLoader.load(
+          ANIMATION_ATLAS_URL,
+          gltf => {
+            const clipsByName = new Map<string, THREE.AnimationClip>();
+            for (const clip of gltf.animations) {
+              clipsByName.set(clip.name, clip);
+            }
+            resolve(clipsByName);
+          },
+          undefined,
+          err => {
+            console.warn(`[Aethelgard Animation] Failed to load animation atlas from "${ANIMATION_ATLAS_URL}":`, err);
+            resolve(new Map());
+          }
+        );
+      });
+    }
+    return this.animationAtlasPromise;
   }
 
   public getRootGroup(): THREE.Group {
@@ -506,7 +546,8 @@ export class CentralizedAnimationController {
   }
 
   /**
-   * Loads an individual AnimationClip from an animation FBX file and retargets to master skeleton
+   * Looks up an individual AnimationClip from the merged animation atlas and retargets it
+   * onto the master skeleton.
    */
   public async loadClip(clipFileName: string): Promise<THREE.AnimationClip | null> {
     if (this.clipCache.has(clipFileName)) {
@@ -518,30 +559,16 @@ export class CentralizedAnimationController {
     }
 
     const loadPromise = (async () => {
-      const candidateUrls = animationRegistry.getAllCandidateUrlsForClip(clipFileName);
-      let animFbx: THREE.Group | null = null;
+      const atlas = await this.loadAnimationAtlas();
+      const rawClip = atlas.get(clipFileName);
 
-      for (const url of candidateUrls) {
-        try {
-          animFbx = await new Promise<THREE.Group>((resolve, reject) => {
-            this.fbxLoader.load(url, resolve, undefined, reject);
-          });
-          if (animFbx && animFbx.animations && animFbx.animations.length > 0) {
-            break;
-          }
-        } catch {
-          // try next candidate path
-        }
-      }
-
-      if (!animFbx || !animFbx.animations || animFbx.animations.length === 0) {
+      if (!rawClip) {
         this.lastExternalClipName = clipFileName;
         this.lastRetargetStatus = 'ERROR';
         this.notifyDebugUpdate();
         return null;
       }
 
-      const rawClip = animFbx.animations[0];
       const retargetedClip = this.retargetClipToMaster(rawClip, clipFileName);
       this.cacheClip(clipFileName, retargetedClip);
       this.lastExternalClipName = clipFileName;
