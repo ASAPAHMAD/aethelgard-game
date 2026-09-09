@@ -15,6 +15,7 @@ import {
   CharacterAnimationState 
 } from '../../services/characterAssetService';
 import { AnimationDebugHUD } from './AnimationDebugHUD';
+import { FPSCounter } from './FPSCounter';
 import { animationRegistry } from '../../services/animationRegistry';
 import { CentralizedAnimationController } from '../../services/animationController';
 import { audioEngine } from '../../services/audioEngine';
@@ -477,13 +478,19 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     camera.position.set(0, 4, 12);
 
     // 3. Renderer
+    // Mobile/touch devices get a lower device-pixel-ratio ceiling since their GPUs pay a much
+    // higher relative cost per fragment; desktop is capped too since >1.5x rarely reads as
+    // sharper but always costs more fill rate. Above 1x pixel ratio, supersampling already
+    // smooths edges, so MSAA (antialias) is redundant GPU work and gets disabled.
+    const isMobileDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024;
+    const pixelRatio = Math.min(window.devicePixelRatio, isMobileDevice ? 1.0 : 1.5);
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: pixelRatio <= 1,
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(pixelRatio);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -496,11 +503,16 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     const sunLight = new THREE.DirectionalLight(0xffecd1, 2.6);
     sunLight.position.set(30, 48, 25);
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.5;
-    sunLight.shadow.camera.far = 140;
-    const d = 42;
+    // Shadow map halved and the frustum/depth range tightened to what the Echo Camp play
+    // area (and the light's actual position/target geometry) needs, rather than a size
+    // generous enough to cover the whole 140x140 terrain plane. Trades shadow coverage at
+    // the far edges of the world for a much cheaper shadow pass and crisper texel density
+    // where the player actually spends time.
+    sunLight.shadow.mapSize.width = 1024;
+    sunLight.shadow.mapSize.height = 1024;
+    sunLight.shadow.camera.near = 10;
+    sunLight.shadow.camera.far = 100;
+    const d = 26;
     sunLight.shadow.camera.left = -d;
     sunLight.shadow.camera.right = d;
     sunLight.shadow.camera.top = d;
@@ -1001,6 +1013,9 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       {/* Realtime Mixamo FBX / GLB Animation Debug HUD Overlay */}
       <AnimationDebugHUD controller={animController} isExternalGLB={isExternalGLBActive} />
 
+      {/* Toggleable FPS Counter Overlay [F2] */}
+      <FPSCounter />
+
       {/* 3D Realtime Combat HUD Overlay */}
       <div className="absolute top-4 left-4 z-20 flex flex-col gap-2 pointer-events-none">
         {/* Settlement & Region Badge */}
@@ -1188,7 +1203,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
           <div>Drag Mouse: Rotate 3D Camera</div>
           <div>F / Click: Attack • Q: Parry</div>
           <div>Space: Dodge Roll • E: Skill / Speak</div>
-          <div>Tab: Target Lock • F3: Anim Debug HUD</div>
+          <div>Tab: Target Lock • F2: FPS • F3: Anim Debug HUD</div>
         </div>
       )}
     </div>
