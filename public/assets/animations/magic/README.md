@@ -1,0 +1,14 @@
+# Magic & Spellblade Mixamo Animations
+Place Magic and Spellblade animations here:
+- `Standing 1H Magic Attack 01.fbx`
+- `Standing 1H Magic Attack 02.fbx`
+- `Standing 1H Magic Attack 03.fbx`
+- `standing 1H cast spell 01.fbx`
+- `Standing 2H Magic Attack 01.fbx`
+- `Standing 2H Magic Attack 02.fbx`
+- `Standing 2H Magic Attack 03.fbx`
+- `Standing 2H Magic Attack 04.fbx`
+- `Standing 2H Magic Attack 05.fbx`
+- `Standing 2H Cast Spell 01.fbx`
+- `Standing 2H Magic Area Attack 01.fbx`
+- `Standing 2H Magic Area Attack 02.fbx`

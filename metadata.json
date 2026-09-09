@@ -1,0 +1,6 @@
+{
+  "name": "Aethelgard: Echoes of the First Sun",
+  "description": "A living survival action MMORPG featuring responsive action combat, deep progression, companion bonding, settlement building, procedural expeditions, and a rich dynamic world.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
