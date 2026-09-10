@@ -1,6 +1,11 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { 
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import {
   CharacterAppearance, 
   CombatArchetype, 
   ClassSpecialization,
@@ -15,6 +20,7 @@ import {
   CharacterAnimationState 
 } from '../../services/characterAssetService';
 import { AnimationDebugHUD } from './AnimationDebugHUD';
+import { FPSCounter } from './FPSCounter';
 import { animationRegistry } from '../../services/animationRegistry';
 import { CentralizedAnimationController } from '../../services/animationController';
 import { audioEngine } from '../../services/audioEngine';
@@ -477,17 +483,45 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     camera.position.set(0, 4, 12);
 
     // 3. Renderer
+    // Mobile/touch devices get a lower device-pixel-ratio ceiling since their GPUs pay a much
+    // higher relative cost per fragment; desktop is capped too since >1.5x rarely reads as
+    // sharper but always costs more fill rate. Above 1x pixel ratio, supersampling already
+    // smooths edges, so MSAA (antialias) is redundant GPU work and gets disabled.
+    const isMobileDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024;
+    const pixelRatio = Math.min(window.devicePixelRatio, isMobileDevice ? 1.0 : 1.5);
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: pixelRatio <= 1,
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(pixelRatio);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
+
+    // 3b. Image-Based Lighting: a PMREM-generated environment map so the scene's many
+    // MeshStandardMaterials pick up ambient specular/diffuse reflections instead of
+    // rendering flat under direct lights alone. Only scene.environment is set here — the
+    // dark atmospheric scene.background color above is untouched, so this doesn't change
+    // what's visible behind the world, only how PBR surfaces are lit.
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const environmentRenderTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = environmentRenderTarget.texture;
+    pmremGenerator.dispose();
+
+    // 3c. Post-Processing Pipeline: UnrealBloomPass adds glow around bright emissive
+    // surfaces (the campfire, the aether portal, weapon/eye glow) without touching their
+    // material definitions. OutputPass is the final pass and is what actually applies the
+    // renderer's ACES tone mapping + color space conversion to the composited result —
+    // RenderPass alone only produces a linear HDR buffer.
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.25, 0.2, 0.92);
+    composer.addPass(bloomPass);
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
 
     // 4. Lighting (Eclipse Corona Atmosphere with High-Contrast Player Readability)
     const ambientLight = new THREE.AmbientLight(0x1e2436, 1.4);
@@ -496,11 +530,16 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     const sunLight = new THREE.DirectionalLight(0xffecd1, 2.6);
     sunLight.position.set(30, 48, 25);
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.5;
-    sunLight.shadow.camera.far = 140;
-    const d = 42;
+    // Shadow map halved and the frustum/depth range tightened to what the Echo Camp play
+    // area (and the light's actual position/target geometry) needs, rather than a size
+    // generous enough to cover the whole 140x140 terrain plane. Trades shadow coverage at
+    // the far edges of the world for a much cheaper shadow pass and crisper texel density
+    // where the player actually spends time.
+    sunLight.shadow.mapSize.width = 1024;
+    sunLight.shadow.mapSize.height = 1024;
+    sunLight.shadow.camera.near = 10;
+    sunLight.shadow.camera.far = 100;
+    const d = 26;
     sunLight.shadow.camera.left = -d;
     sunLight.shadow.camera.right = d;
     sunLight.shadow.camera.top = d;
@@ -534,7 +573,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     scene.add(vegSystem);
 
     // 9. Echo Camp Settlement (Tier 1 Beachhead with Functional Stations & Resident NPCs)
-    const { campGroup, campLights, npcs: campNpcs } = createEchoCampSettlement(settlementTier);
+    const { campGroup, campLights, npcs: campNpcs, npcMixers: campNpcMixers } = createEchoCampSettlement(settlementTier);
     scene.add(campGroup);
 
     // 10. Ancient First Sun Ruins & Sunken Sanctum Portal Archway (North-West)
@@ -732,6 +771,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      composer.setSize(w, h);
     };
 
     const resizeObserver = new ResizeObserver(handleResize);
@@ -942,6 +982,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       // --- ENVIRONMENT & LIGHTING DYNAMICS ---
       oceanSystem.update(elapsedTime);
       eclipseZone.update(elapsedTime);
+      campNpcMixers.forEach(mixer => mixer.update(delta));
 
       if (campLights.fireLight) {
         campLights.fireLight.intensity = 3.2 + Math.sin(elapsedTime * 9.0) * 0.7;
@@ -974,7 +1015,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       camera.position.set(camX, camY, camZ);
       camera.lookAt(s.playerPos.x, s.playerPos.y + 1.4, s.playerPos.z);
 
-      renderer.render(scene, camera);
+      composer.render();
     };
 
     animate();
@@ -989,6 +1030,10 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       window.removeEventListener('mouseup', onMouseUp);
       canvas.removeEventListener('wheel', onWheel);
       resizeObserver.disconnect();
+      environmentRenderTarget.dispose();
+      bloomPass.dispose();
+      outputPass.dispose();
+      composer.dispose();
       renderer.dispose();
     };
   }, [appearance, archetype, settlementTier, onTakeDamage, onConsumeStamina]);
@@ -1000,6 +1045,9 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
 
       {/* Realtime Mixamo FBX / GLB Animation Debug HUD Overlay */}
       <AnimationDebugHUD controller={animController} isExternalGLB={isExternalGLBActive} />
+
+      {/* Toggleable FPS Counter Overlay [F2] */}
+      <FPSCounter />
 
       {/* 3D Realtime Combat HUD Overlay */}
       <div className="absolute top-4 left-4 z-20 flex flex-col gap-2 pointer-events-none">
@@ -1188,7 +1236,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
           <div>Drag Mouse: Rotate 3D Camera</div>
           <div>F / Click: Attack • Q: Parry</div>
           <div>Space: Dodge Roll • E: Skill / Speak</div>
-          <div>Tab: Target Lock • F3: Anim Debug HUD</div>
+          <div>Tab: Target Lock • F2: FPS • F3: Anim Debug HUD</div>
         </div>
       )}
     </div>

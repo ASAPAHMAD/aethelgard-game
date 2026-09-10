@@ -520,48 +520,5 @@ export const animationRegistry = {
     const config = this.getClassConfig(archetype);
     const validIndex = Math.max(0, Math.min(config.lightCombo.length - 1, comboIndex - 1));
     return config.lightCombo[validIndex];
-  },
-
-  getAssetUrlForClip(clipFileName: string): string {
-    // Check universal lookup first
-    for (const info of Object.values(UNIVERSAL_ANIMATION_FILES)) {
-      if (info.fileName.toLowerCase() === clipFileName.toLowerCase()) {
-        return info.relativeUrl;
-      }
-    }
-
-    // Check categories by name hints
-    const lower = clipFileName.toLowerCase();
-    if (lower.includes('sword and shield')) {
-      return `/assets/animations/sword_shield/${clipFileName}`;
-    }
-    if (lower.includes('great sword')) {
-      return `/assets/animations/great_sword/${clipFileName}`;
-    }
-    if (lower.includes('magic') || lower.includes('cast spell')) {
-      return `/assets/animations/magic/${clipFileName}`;
-    }
-    if (lower.includes('breathing')) {
-      return `/assets/characters/mixamo/${clipFileName}`;
-    }
-
-    // Default to animations directory
-    return `/assets/animations/universal/${clipFileName}`;
-  },
-
-  getAllCandidateUrlsForClip(clipFileName: string): string[] {
-    const primary = this.getAssetUrlForClip(clipFileName);
-    const urls = [primary];
-    
-    // Flat fallbacks in case user dropped everything into /assets/animations/ or /assets/characters/
-    urls.push(`/assets/animations/${clipFileName}`);
-    urls.push(`/assets/characters/${clipFileName}`);
-    urls.push(`/assets/characters/mixamo/${clipFileName}`);
-    urls.push(`/assets/animations/universal/${clipFileName}`);
-    urls.push(`/assets/animations/sword_shield/${clipFileName}`);
-    urls.push(`/assets/animations/great_sword/${clipFileName}`);
-    urls.push(`/assets/animations/magic/${clipFileName}`);
-
-    return Array.from(new Set(urls));
   }
 };
