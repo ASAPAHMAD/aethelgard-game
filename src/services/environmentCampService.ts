@@ -1,5 +1,13 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { clone as cloneSkinnedScene } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { getTerrainHeight } from './environmentTerrainService';
+import {
+  loadAnimationAtlas,
+  buildSkeletonBoneMap,
+  retargetClipToSkeleton
+} from './mixamoSkeletonUtils';
 
 export interface InteractiveNpcInfo {
   id: string;
@@ -21,8 +29,15 @@ export function createEchoCampSettlement(settlementTier: number = 1): {
     forgeLight?: THREE.PointLight;
   };
   npcs: InteractiveNpcInfo[];
+  /**
+   * Mixers for any NPC using a real rigged GLB model (see Ganfaul below). Populated
+   * asynchronously as each model finishes loading - the caller should keep iterating the
+   * same array reference every frame rather than snapshotting it once.
+   */
+  npcMixers: THREE.AnimationMixer[];
 } {
   const campGroup = new THREE.Group();
+  const npcMixers: THREE.AnimationMixer[] = [];
   campGroup.name = 'echo_camp';
 
   // Common PBR Materials
@@ -711,6 +726,33 @@ export function createEchoCampSettlement(settlementTier: number = 1): {
     meshGroup: kaelenGroup
   });
 
+  // 5. Ganfaul M. Aure (rigged Mixamo GLB NPC - validates the master-rig animation pipeline
+  // on a real skinned character instead of a box-and-sphere placeholder). The primitive
+  // figure below is added immediately and stays visible as a fallback; loadGanfaulModel
+  // swaps in the real model only once it has fully loaded, rigged, and started animating.
+  const ganfaulGroup = createNpcFigure(
+    'Ganfaul',
+    'Wandering Swordsman',
+    new THREE.MeshStandardMaterial({ color: 0x44403c, roughness: 0.85 }),
+    skinMat,
+    new THREE.MeshStandardMaterial({ color: 0x57534e, roughness: 0.7 })
+  );
+  const ganfaulWorldPos = new THREE.Vector3(2.0, getTerrainHeight(2.0, 4.5), 4.5);
+  ganfaulGroup.position.copy(ganfaulWorldPos);
+  ganfaulGroup.rotation.y = -Math.PI * 0.15;
+  campGroup.add(ganfaulGroup);
+
+  npcs.push({
+    id: 'ganfaul',
+    name: 'Ganfaul M. Aure',
+    title: 'Wandering Swordsman',
+    role: 'Wanderer',
+    position: ganfaulWorldPos,
+    meshGroup: ganfaulGroup
+  });
+
+  loadGanfaulModel(ganfaulGroup, npcMixers);
+
   return {
     campGroup,
     campLights: {
@@ -718,8 +760,89 @@ export function createEchoCampSettlement(settlementTier: number = 1): {
       flameMesh,
       forgeLight
     },
-    npcs
+    npcs,
+    npcMixers
   };
+}
+
+const GANFAUL_MODEL_URL = '/assets/characters/ganfaul-m-aure.glb';
+// animation-atlas.glb has no true "Breathing Idle" clip - that name only ever existed as the
+// remote master rig's own embedded clip (extracted at runtime in animationController.ts), not
+// one of the 31 files converted into the shared atlas in scripts/convert-animations-to-glb.mjs.
+// "sword and shield idle.fbx" is a real looping standing-idle clip that IS in the atlas.
+const GANFAUL_IDLE_CLIP = 'sword and shield idle.fbx';
+const GANFAUL_TARGET_HEIGHT = 1.8;
+
+/**
+ * Loads the rigged Ganfaul GLB, clones it (SkeletonUtils.clone, since a naive Object3D
+ * clone doesn't correctly rebind SkinnedMesh bone references), retargets an idle clip from
+ * the shared animation-atlas.glb onto its skeleton, and swaps it in over the primitive
+ * placeholder figure already sitting in npcGroup. On any failure the placeholder is left
+ * untouched and visible - no broken/invisible NPC.
+ */
+function loadGanfaulModel(npcGroup: THREE.Group, mixers: THREE.AnimationMixer[]): void {
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath('/draco/');
+  const loader = new GLTFLoader();
+  loader.setDRACOLoader(dracoLoader);
+
+  loader.load(
+    GANFAUL_MODEL_URL,
+    gltf => {
+      (async () => {
+        const model = cloneSkinnedScene(gltf.scene) as THREE.Group;
+
+        // Auto-scale and ground the model the same way the player's master rig does.
+        const bbox = new THREE.Box3().setFromObject(model);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const scaleFactor = size.y > 0 ? GANFAUL_TARGET_HEIGHT / size.y : 1;
+        model.scale.setScalar(scaleFactor);
+
+        const scaledBbox = new THREE.Box3().setFromObject(model);
+        const scaledCenter = new THREE.Vector3();
+        scaledBbox.getCenter(scaledCenter);
+        model.position.x = -scaledCenter.x;
+        model.position.z = -scaledCenter.z;
+        model.position.y = -scaledBbox.min.y;
+
+        model.traverse(child => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+          }
+        });
+
+        const boneMap = buildSkeletonBoneMap(model);
+        const mixer = new THREE.AnimationMixer(model);
+
+        const atlas = await loadAnimationAtlas();
+        const rawIdleClip = atlas.get(GANFAUL_IDLE_CLIP);
+        if (rawIdleClip) {
+          const retargeted = retargetClipToSkeleton(rawIdleClip, boneMap, GANFAUL_IDLE_CLIP);
+          mixer.clipAction(retargeted).play();
+        } else {
+          console.warn('[Aethelgard Camp] Idle clip missing from animation atlas; Ganfaul will hold his bind pose.');
+        }
+
+        // Swap: hide the primitive placeholder's parts, mount the real rigged model.
+        npcGroup.children.forEach(child => {
+          child.visible = false;
+        });
+        npcGroup.add(model);
+        mixers.push(mixer);
+
+        console.info('[Aethelgard Camp] Ganfaul rigged model loaded and animating.');
+      })().catch(e => {
+        console.warn('[Aethelgard Camp] Failed to process Ganfaul model, keeping primitive fallback:', e);
+      });
+    },
+    undefined,
+    err => {
+      console.warn('[Aethelgard Camp] Failed to load Ganfaul GLB, keeping primitive fallback:', err);
+    }
+  );
 }
 
 /**

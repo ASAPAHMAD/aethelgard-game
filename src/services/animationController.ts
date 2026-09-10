@@ -14,14 +14,11 @@ import {
   MasterCharacterLoadingState,
   DEFAULT_MASTER_CONFIG
 } from '../config/characterConfig';
-
-/**
- * Single GLB produced by scripts/convert-animations-to-glb.mjs, bundling every clip from
- * public/assets/animations/**.fbx as animation tracks on the shared Mixamo skeleton. Loading
- * one GLB instead of 31 separate FBX files avoids 31 slow FBX parses and duplicate skeletons.
- * Re-run that script (npm run convert-animations) after adding/renaming/removing a clip FBX.
- */
-const ANIMATION_ATLAS_URL = '/assets/animations/animation-atlas.glb';
+import {
+  loadAnimationAtlas as loadSharedAnimationAtlas,
+  normalizeMixamoBoneName,
+  retargetClipToSkeleton
+} from './mixamoSkeletonUtils';
 
 export interface AnimationDebugInfo {
   masterName: string;
@@ -68,7 +65,6 @@ export class CentralizedAnimationController {
   private actionCache: Map<string, THREE.AnimationAction> = new Map();
   private clipCache: Map<string, THREE.AnimationClip> = new Map();
   private loadingPromises: Map<string, Promise<THREE.AnimationClip | null>> = new Map();
-  private animationAtlasPromise: Promise<Map<string, THREE.AnimationClip>> | null = null;
 
   // State Management
   private currentArchetype: CombatArchetype = 'vanguard';
@@ -114,34 +110,9 @@ export class CentralizedAnimationController {
 
     // Kick off the animation atlas fetch immediately; it's independent of the master
     // character rig load, so both can be in flight over the network at the same time.
-    this.loadAnimationAtlas();
-  }
-
-  /**
-   * Loads and caches the merged animation atlas GLB (see ANIMATION_ATLAS_URL), returning
-   * a map of clip name (matching the original .fbx file name, e.g. "Walking.fbx") to clip.
-   */
-  private loadAnimationAtlas(): Promise<Map<string, THREE.AnimationClip>> {
-    if (!this.animationAtlasPromise) {
-      this.animationAtlasPromise = new Promise(resolve => {
-        this.gltfLoader.load(
-          ANIMATION_ATLAS_URL,
-          gltf => {
-            const clipsByName = new Map<string, THREE.AnimationClip>();
-            for (const clip of gltf.animations) {
-              clipsByName.set(clip.name, clip);
-            }
-            resolve(clipsByName);
-          },
-          undefined,
-          err => {
-            console.warn(`[Aethelgard Animation] Failed to load animation atlas from "${ANIMATION_ATLAS_URL}":`, err);
-            resolve(new Map());
-          }
-        );
-      });
-    }
-    return this.animationAtlasPromise;
+    // This is shared module-level state (see mixamoSkeletonUtils.ts) so NPC characters
+    // reusing the same atlas don't trigger a second fetch/parse of the file.
+    loadSharedAnimationAtlas();
   }
 
   public getRootGroup(): THREE.Group {
@@ -248,7 +219,7 @@ export class CentralizedAnimationController {
       this.masterModel.traverse(child => {
         if ((child as THREE.Bone).isBone) {
           const bone = child as THREE.Bone;
-          const normalized = this.normalizeBoneName(bone.name);
+          const normalized = normalizeMixamoBoneName(bone.name);
           this.skeletonBones.set(normalized, bone);
           this.skeletonBones.set(bone.name, bone);
         }
@@ -263,7 +234,7 @@ export class CentralizedAnimationController {
           if (skinned.skeleton && skinned.skeleton.bones) {
             skinned.skeleton.bones.forEach(b => {
               if (b) {
-                const norm = this.normalizeBoneName(b.name);
+                const norm = normalizeMixamoBoneName(b.name);
                 this.skeletonBones.set(norm, b);
                 this.skeletonBones.set(b.name, b);
               }
@@ -559,7 +530,7 @@ export class CentralizedAnimationController {
     }
 
     const loadPromise = (async () => {
-      const atlas = await this.loadAnimationAtlas();
+      const atlas = await loadSharedAnimationAtlas();
       const rawClip = atlas.get(clipFileName);
 
       if (!rawClip) {
@@ -586,40 +557,7 @@ export class CentralizedAnimationController {
    * Retargets an AnimationClip by matching bone track names with the master skeleton
    */
   private retargetClipToMaster(clip: THREE.AnimationClip, clipName: string): THREE.AnimationClip {
-    const newTracks: THREE.KeyframeTrack[] = [];
-
-    for (const track of clip.tracks) {
-      const dotIdx = track.name.lastIndexOf('.');
-      if (dotIdx === -1) continue;
-
-      const trackNodeName = track.name.substring(0, dotIdx);
-      const property = track.name.substring(dotIdx);
-
-      // Find matching bone in master skeleton
-      const normalized = this.normalizeBoneName(trackNodeName);
-      const targetBone = this.skeletonBones.get(normalized) || this.skeletonBones.get(trackNodeName);
-
-      if (targetBone) {
-        // Clone track with the exact target bone name on master
-        const newTrackName = `${targetBone.name}${property}`;
-        const clonedTrack = track.clone();
-        clonedTrack.name = newTrackName;
-        newTracks.push(clonedTrack);
-      } else {
-        // Keep original if target bone name might be matched directly by Three.js
-        newTracks.push(track.clone());
-      }
-    }
-
-    const retargeted = new THREE.AnimationClip(clipName, clip.duration, newTracks);
-    return retargeted;
-  }
-
-  private normalizeBoneName(name: string): string {
-    return name
-      .replace(/^mixamorig[:_]?/i, '')
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .toLowerCase();
+    return retargetClipToSkeleton(clip, this.skeletonBones, clipName);
   }
 
   private cacheClip(clipFileName: string, clip: THREE.AnimationClip) {

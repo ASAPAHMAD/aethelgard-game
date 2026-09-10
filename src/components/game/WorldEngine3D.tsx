@@ -573,7 +573,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     scene.add(vegSystem);
 
     // 9. Echo Camp Settlement (Tier 1 Beachhead with Functional Stations & Resident NPCs)
-    const { campGroup, campLights, npcs: campNpcs } = createEchoCampSettlement(settlementTier);
+    const { campGroup, campLights, npcs: campNpcs, npcMixers: campNpcMixers } = createEchoCampSettlement(settlementTier);
     scene.add(campGroup);
 
     // 10. Ancient First Sun Ruins & Sunken Sanctum Portal Archway (North-West)
@@ -982,6 +982,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       // --- ENVIRONMENT & LIGHTING DYNAMICS ---
       oceanSystem.update(elapsedTime);
       eclipseZone.update(elapsedTime);
+      campNpcMixers.forEach(mixer => mixer.update(delta));
 
       if (campLights.fireLight) {
         campLights.fireLight.intensity = 3.2 + Math.sin(elapsedTime * 9.0) * 0.7;
