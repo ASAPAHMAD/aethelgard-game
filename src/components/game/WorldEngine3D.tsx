@@ -1,6 +1,11 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { 
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import {
   CharacterAppearance, 
   CombatArchetype, 
   ClassSpecialization,
@@ -496,6 +501,28 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
 
+    // 3b. Image-Based Lighting: a PMREM-generated environment map so the scene's many
+    // MeshStandardMaterials pick up ambient specular/diffuse reflections instead of
+    // rendering flat under direct lights alone. Only scene.environment is set here — the
+    // dark atmospheric scene.background color above is untouched, so this doesn't change
+    // what's visible behind the world, only how PBR surfaces are lit.
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const environmentRenderTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = environmentRenderTarget.texture;
+    pmremGenerator.dispose();
+
+    // 3c. Post-Processing Pipeline: UnrealBloomPass adds glow around bright emissive
+    // surfaces (the campfire, the aether portal, weapon/eye glow) without touching their
+    // material definitions. OutputPass is the final pass and is what actually applies the
+    // renderer's ACES tone mapping + color space conversion to the composited result —
+    // RenderPass alone only produces a linear HDR buffer.
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.25, 0.2, 0.92);
+    composer.addPass(bloomPass);
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
+
     // 4. Lighting (Eclipse Corona Atmosphere with High-Contrast Player Readability)
     const ambientLight = new THREE.AmbientLight(0x1e2436, 1.4);
     scene.add(ambientLight);
@@ -744,6 +771,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      composer.setSize(w, h);
     };
 
     const resizeObserver = new ResizeObserver(handleResize);
@@ -986,7 +1014,7 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       camera.position.set(camX, camY, camZ);
       camera.lookAt(s.playerPos.x, s.playerPos.y + 1.4, s.playerPos.z);
 
-      renderer.render(scene, camera);
+      composer.render();
     };
 
     animate();
@@ -1001,6 +1029,10 @@ export const WorldEngine3D: React.FC<WorldEngine3DProps> = ({
       window.removeEventListener('mouseup', onMouseUp);
       canvas.removeEventListener('wheel', onWheel);
       resizeObserver.disconnect();
+      environmentRenderTarget.dispose();
+      bloomPass.dispose();
+      outputPass.dispose();
+      composer.dispose();
       renderer.dispose();
     };
   }, [appearance, archetype, settlementTier, onTakeDamage, onConsumeStamina]);
